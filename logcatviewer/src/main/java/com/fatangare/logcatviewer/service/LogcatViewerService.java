@@ -17,8 +17,16 @@
 
 package com.fatangare.logcatviewer.service;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.Vector;
+
 import android.app.Service;
 import android.content.Intent;
+import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
@@ -28,22 +36,19 @@ import android.util.Log;
 
 import com.fatangare.logcatviewer.utils.Constants;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.Vector;
-
-
 /**
  * Service to listen logcat logs.
  */
 public class LogcatViewerService extends Service {
     private static final String LOG_TAG = "LogcatViewerService";
 
+    private Handler mHandler;
 
-    private static Handler mHandler;
+    public interface LogEntryListener {
+        void onLogEntryRead(String entry);
+    }
+
+    private LogEntryListener mLogEntryListener;
 
     /**
      * Logcat source buffer.
@@ -69,7 +74,7 @@ public class LogcatViewerService extends Service {
     private int mRecordedLogEntriesCount;
 
     //Threads
-    private volatile boolean mShouldLogcatRunnableBeKilled = false;
+    private volatile static boolean mShouldLogcatRunnableBeKilled = false;
     private volatile boolean mIsLogcatRunnableRunning = false;
 
     //Status
@@ -90,7 +95,18 @@ public class LogcatViewerService extends Service {
      */
     private static final int LOG_SAVING_INTERVAL = 5000; //5s
 
+    private final IBinder mBinder = new LocalBinder();
 
+    /**
+     * Class used for the client Binder.  Because we know this service always
+     * runs in the same process as its clients, we don't need to deal with IPC.
+     */
+    public class LocalBinder extends Binder {
+        LogcatViewerService getService() {
+            // Return this instance of LocalService so clients can call public methods
+            return LogcatViewerService.this;
+        }
+    }
 
     // Handler Messages
 
@@ -109,7 +125,6 @@ public class LogcatViewerService extends Service {
      */
     public static final int MSG_NEW_LOG_ENTRY = 3;
 
-
     private Runnable mLogcatRunnable = new Runnable() {
         @Override
         public void run() {
@@ -118,7 +133,6 @@ public class LogcatViewerService extends Service {
             runLogcatSubscriber();
             //If reached here, it means thread is killed.
             mIsLogcatRunnableRunning = false;
-            return;
         }
     };
 
@@ -126,16 +140,14 @@ public class LogcatViewerService extends Service {
         @Override
         public void run() {
             //save log entries
-            recordLogData();
+//            recordLogData();
             //wait for LOG_SAVING_INTERVAL before next 'record' operation.
-            mHandler.postDelayed(mRecordLogEntryRunnable, LOG_SAVING_INTERVAL);
+//            mHandler.postDelayed(mRecordLogEntryRunnable, LOG_SAVING_INTERVAL);
         }
     };
 
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
+    public void setLogListener(LogEntryListener listener){
+        mLogEntryListener = listener;
     }
 
     @Override
@@ -160,13 +172,6 @@ public class LogcatViewerService extends Service {
         return false;
     }
 
-    /**
-     * Handler to sendMessage messages from service to View.
-     * @param handler handler from view
-     */
-    public static void setHandler(Handler handler) {
-        mHandler = handler;
-    }
 
     public IBinder onBind(Intent intent) {
         return mBinder;
@@ -182,8 +187,8 @@ public class LogcatViewerService extends Service {
         try {
             process = Runtime.getRuntime().exec("/system/bin/logcat -b " + mLogcatSource);
         } catch (IOException e) {
-            Log.e(LOG_TAG,"Exception trying to exec logcat in a process", e);
-            sendMessage(MSG_LOGCAT_RUN_FAILURE);
+            Log.e(LOG_TAG, "Exception trying to exec logcat in a process", e);
+//            sendMessage(MSG_LOGCAT_RUN_FAILURE);
             return;
         }
 
@@ -205,19 +210,22 @@ public class LogcatViewerService extends Service {
                 //Read log entry.
                 logEntry = reader.readLine();
 
-                if(logEntry == null){
-                    Log.d(LOG_TAG,"process buffer read line was null.");
+                if (logEntry == null) {
+                    Log.d(LOG_TAG, "process buffer read line was null.");
                     continue;
                 }
 
                 //Send log entry to view.
-                sendLogEntry(logEntry);
+//                sendLogEntry(logEntry);
+                if(mLogEntryListener != null) {
+                    mLogEntryListener.onLogEntryRead(logEntry);
+                }
 
                 //If recording is on, save log entries in mRecordingData in order to save them
                 // after every LOG_SAVING_INTERVAL interval
                 if (mIsRecording) {
-                    if(TextUtils.isEmpty(mFilterText) ||
-                            (!TextUtils.isEmpty(mFilterText) && logEntry.toLowerCase().contains(mFilterText.toLowerCase()))) {
+                    if (TextUtils.isEmpty(mFilterText) || (!TextUtils.isEmpty(mFilterText) && logEntry.toLowerCase().contains
+                        (mFilterText.toLowerCase()))) {
                         mRecordingData.add(logEntry);
                     }
                 }
@@ -226,27 +234,25 @@ public class LogcatViewerService extends Service {
             Log.d(LOG_TAG, "Preparing to terminate LogcatRunnable thread");
             //If recording is on, save log entries and reset recording related fields.
             if (mIsRecording) {
-                recordLogData();
+//                recordLogData();
 
-                mHandler.removeCallbacks(mRecordLogEntryRunnable);
+//                mHandler.removeCallbacks(mRecordLogEntryRunnable);
                 mIsRecording = false;
                 mRecordingData.removeAllElements();
                 mRecordingFilename = null;
 
             }
 
-
         } catch (IOException e) {
             //Fail to read logcat log entries
-            sendMessage(MSG_LOGCAT_READ_FAILURE);
-            Log.e(LOG_TAG,"Exception trying to read/parse the logcat process output", e);
+            Log.e(LOG_TAG, "Exception trying to read/parse the logcat process output", e);
         } finally {
             //Release resources
             try {
                 reader.close();
                 process.destroy();
-            } catch (Exception e){
-                Log.e(LOG_TAG,"Exception trying to clean up resources", e);
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "Exception trying to clean up resources", e);
             }
         }
 
@@ -262,134 +268,74 @@ public class LogcatViewerService extends Service {
 
     /**
      * Check if request to kill LogcatRunnable thread is made.
+     *
      * @return true if request is made else false.
      */
     private synchronized boolean shouldLogcatRunnableBeKilled() {
         return mShouldLogcatRunnableBeKilled;
     }
 
-    /**
-     * Send handler messages to view - communication from service to view.
-     * @param msg message constant - starting with MSG_
-     */
-    private void sendMessage(int msg) {
-        Message.obtain(mHandler, msg, "error").sendToTarget();
+
+    public void changeLogcatSource(String logcatSource) {
+        mLogcatSource = logcatSource;
+        restart();
     }
 
-    /**
-     * Send logcat log entry to view.
-     * @param logEntry log entry.
-     */
-    private void sendLogEntry(@NonNull String logEntry) {
-        Message.obtain(mHandler, MSG_NEW_LOG_ENTRY, logEntry).sendToTarget();
+    public void restart() {
+        //request to kill thread
+        requestToKillLogcatRunnableThread();
+
+        //Till thread is not killed, wait
+        while (mIsLogcatRunnableRunning) {
+            Log.d(LOG_TAG, "restart:Waiting to kill LogcatRunnable thread");
+        }
+
+        //since request to kill is completed, set mShouldLogcatRunnableBeKilled to false
+        mShouldLogcatRunnableBeKilled = false;
+
+        //Start new LogcatRunnable thread.
+        Thread thr = new Thread(mLogcatRunnable);
+        thr.start();
     }
 
-    /**
-     * Save log data to file
-     */
-    private void recordLogData() {
-        try {
-            int size = mRecordingData.size();
-            //no entry to save, so return
-            if(size == 0){
-                return;
-            }
+    public void stop() {
+        Log.d(LOG_TAG, "stop:request to stop LogcatViewerService service is made.");
+        //Kill mLogcatRunnable thread.
+        requestToKillLogcatRunnableThread();
 
-            //Since logcat keeps adding logentries to mRecordingData, keep it in local field.
-            Vector<String> recordingData = new Vector<>(mRecordingData);
-
-            //Get log directory.
-            File logDir = Constants.getRecordDir(this);
-            logDir.mkdirs();
-
-            //Get log file.
-            File logFile = new File(logDir, mRecordingFilename);
-
-            //Get writer to write in log file. Enable 'Append' mode.
-            FileWriter logFileWriter = new FileWriter(logFile, true);
-
-            //Write to log file.
-            for (int i = 0; i < size; i++) {
-                logFileWriter.append(recordingData.elementAt(i) + "\n");
-                //Once saved, delete it from mRecordingData.
-                mRecordingData.removeElementAt(0);
-            }
-
-            //Release resources.
-            recordingData.removeAllElements();
-            logFileWriter.close();
-
-        } catch (Exception e) {
-            Log.e(LOG_TAG, "recordLogData:Error writing the log to file. Exception: " + e.toString());
+        //Till thread is not killed, wait
+        while (mIsLogcatRunnableRunning) {
+            Log.d(LOG_TAG, "stop:Waiting to kill LogcatRunnable thread");
         }
+
+        //Stop LogcatViewerService service.
+        stopSelf();
     }
 
+    /*public void startRecording(String recordingFilename, String filterText) {
+        mRecordingData = new Vector<>();
+        mIsRecording = true;
+        mRecordingFilename = recordingFilename;
+        mFilterText = filterText;
+        mHandler.postDelayed(mRecordLogEntryRunnable, LOG_SAVING_INTERVAL);
+    }
 
-    //AIDL to communicate from view to service.
-    private final ILogcatViewerService.Stub mBinder = new ILogcatViewerService.Stub() {
+    public void stopRecording() {
+        mHandler.removeCallbacks(mRecordLogEntryRunnable);
+        mIsRecording = false;
+        mRecordingData.removeAllElements();
+        mRecordingFilename = null;
+    }*/
 
-        public void changeLogcatSource(String logcatSource) {
-            mLogcatSource = logcatSource;
-            restart();
-        }
+    public boolean isRecording() {
+        return mIsRecording;
+    }
 
-        public void restart() {
-            //request to kill thread
-            requestToKillLogcatRunnableThread();
+    public void pause() {
+        mIsPaused = true;
+    }
 
-            //Till thread is not killed, wait
-            while (mIsLogcatRunnableRunning) {
-                Log.d(LOG_TAG, "restart:Waiting to kill LogcatRunnable thread");
-            }
-
-            //since request to kill is completed, set mShouldLogcatRunnableBeKilled to false
-            mShouldLogcatRunnableBeKilled = false;
-
-            //Start new LogcatRunnable thread.
-            Thread thr = new Thread(mLogcatRunnable);
-            thr.start();
-        }
-
-        public void stop() {
-            Log.d(LOG_TAG, "stop:request to stop LogcatViewerService service is made.");
-            //Kill mLogcatRunnable thread.
-            requestToKillLogcatRunnableThread();
-
-            //Till thread is not killed, wait
-            while (mIsLogcatRunnableRunning) {
-                Log.d(LOG_TAG, "stop:Waiting to kill LogcatRunnable thread");
-            }
-
-            //Stop LogcatViewerService service.
-            stopSelf();
-        }
-
-        public void startRecording(String recordingFilename, String filterText) {
-            mRecordingData = new Vector<>();
-            mIsRecording = true;
-            mRecordingFilename = recordingFilename;
-            mFilterText = filterText;
-            mHandler.postDelayed(mRecordLogEntryRunnable, LOG_SAVING_INTERVAL);
-        }
-
-        public void stopRecording() {
-            mHandler.removeCallbacks(mRecordLogEntryRunnable);
-            mIsRecording = false;
-            recordLogData();
-            mRecordingData.removeAllElements();
-            mRecordingFilename = null;
-        }
-
-        public boolean isRecording() {
-            return mIsRecording;
-        }
-
-        public void pause() {
-            mIsPaused = true;
-        }
-
-        public void resume() {
-            mIsPaused = false;
-        }
-    };
+    public void resume() {
+        mIsPaused = false;
+    }
 }

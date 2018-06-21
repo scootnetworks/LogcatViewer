@@ -17,16 +17,16 @@
 
 package com.fatangare.logcatviewer.service;
 
+import java.io.File;
+import java.util.ArrayList;
+
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.net.Uri;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Message;
-import android.os.RemoteException;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.SparseBooleanArray;
@@ -41,11 +41,10 @@ import android.widget.RadioGroup;
 import android.widget.Toast;
 
 import com.fatangare.logcatviewer.R;
+import com.fatangare.logcatviewer.service.LogcatViewerService.LocalBinder;
+import com.fatangare.logcatviewer.service.LogcatViewerService.LogEntryListener;
 import com.fatangare.logcatviewer.ui.adapter.LogRecordsListAdapter;
 import com.fatangare.logcatviewer.ui.adapter.LogcatViewerListAdapter;
-
-import java.io.File;
-import java.util.ArrayList;
 
 import wei.mark.standout.StandOutWindow;
 import wei.mark.standout.constants.StandOutFlags;
@@ -54,7 +53,7 @@ import wei.mark.standout.ui.Window;
 /**
  * Floating view to show logcat logs.
  */
-public class LogcatViewerFloatingView extends StandOutWindow {
+public class LogcatViewerFloatingView extends StandOutWindow implements LogEntryListener {
     private static final String LOG_TAG = "LogcatFloatingView";
 
     //Views
@@ -69,45 +68,27 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     private LinearLayout mRecordsBottombarLayout;
 
     //Service
-    private ILogcatViewerService mLogcatViewerService;
+    LogcatViewerService mService;
 
     //Service connection
     private ServiceConnection mLogcatViewerServiceConnection = new ServiceConnection() {
+
         public void onServiceConnected(ComponentName className, IBinder service) {
-            mLogcatViewerService = ILogcatViewerService.Stub.asInterface(service);
-            LogcatViewerService.setHandler(mHandler);
+
+            LocalBinder binder = (LocalBinder) service;
+            mService = binder.getService();
+            mService.setLogListener(LogcatViewerFloatingView.this);
 
             try {
-                mLogcatViewerService.restart();
-            } catch (RemoteException e) {
+                mService.restart();
+            } catch (Exception e) {
                 Log.e(LOG_TAG, "Could not start LogcatViewerService service");
             }
         }
 
         public void onServiceDisconnected(ComponentName className) {
             Log.i(LOG_TAG, "onServiceDisconnected has been called");
-            mLogcatViewerService = null;
-        }
-    };
-
-    /**
-     * Handle service to view communication.
-     */
-    private Handler mHandler = new Handler() {
-        public void handleMessage(Message msg) {
-            switch (msg.what) {
-                case LogcatViewerService.MSG_LOGCAT_READ_FAILURE:
-                    Log.d(LOG_TAG, "Reading logs for logcat is failed.");
-                    break;
-                case LogcatViewerService.MSG_LOGCAT_RUN_FAILURE:
-                    Log.d(LOG_TAG, "Executing logcat command is failed.");
-                    break;
-                case LogcatViewerService.MSG_NEW_LOG_ENTRY:
-                    mAdapter.addLogEntry((String) msg.obj);
-                    break;
-                default:
-                    super.handleMessage(msg);
-            }
+            mService = null;
         }
     };
 
@@ -132,12 +113,9 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     @Override
     public void onDestroy() {
         //if recording, stop recording before unbinding service.
-        try {
-            if (mLogcatViewerService.isRecording()) {
-                stopRecording();
-            }
-        } catch (RemoteException e) {
-            Log.e(LOG_TAG, "isRecording() failed");
+        if (mService != null) {
+            mService.setLogListener(null);
+            mService.stop();
         }
 
         unbindService(mLogcatViewerServiceConnection);
@@ -167,7 +145,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         setupLogListView(rootView);
         setupBottomBarView(rootView);
 
-
         setupRecordListView();
         setupFilterTextView(rootView);
         setupPriorityLevelView();
@@ -178,18 +155,15 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     public StandOutLayoutParams getParams(int id, Window window) {
         DisplayMetrics displayMetrics = getApplicationContext().getResources().getDisplayMetrics();
         return new StandOutLayoutParams(id, displayMetrics.widthPixels * 5 / 6, displayMetrics.heightPixels / 2,
-                StandOutLayoutParams.RIGHT, StandOutLayoutParams.BOTTOM, 400, 300);
+            StandOutLayoutParams.RIGHT, StandOutLayoutParams.BOTTOM, 400, 300);
     }
 
     // move the window by dragging the view
     @Override
     public int getFlags(int id) {
-        return StandOutFlags.FLAG_DECORATION_SYSTEM
-                | StandOutFlags.FLAG_BODY_MOVE_ENABLE
-                | StandOutFlags.FLAG_WINDOW_HIDE_ENABLE
-                | StandOutFlags.FLAG_WINDOW_BRING_TO_FRONT_ON_TAP
-                | StandOutFlags.FLAG_WINDOW_EDGE_LIMITS_ENABLE
-                | StandOutFlags.FLAG_WINDOW_PINCH_RESIZE_ENABLE;
+        return StandOutFlags.FLAG_DECORATION_SYSTEM | StandOutFlags.FLAG_BODY_MOVE_ENABLE | StandOutFlags
+            .FLAG_WINDOW_HIDE_ENABLE | StandOutFlags.FLAG_WINDOW_BRING_TO_FRONT_ON_TAP | StandOutFlags
+            .FLAG_WINDOW_EDGE_LIMITS_ENABLE | StandOutFlags.FLAG_WINDOW_PINCH_RESIZE_ENABLE;
     }
 
     @Override
@@ -202,38 +176,18 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         return StandOutWindow.getShowIntent(this, LogcatViewerFloatingView.class, id);
     }
 
-
-    /**
-     * Stop recording log-entries
-     */
-    private void stopRecording() {
-        try {
-            mLogcatViewerService.stopRecording();
-        } catch (RemoteException e) {
-            Log.e(LOG_TAG, "StopRecording:Trouble writing the log to a file");
-        }
-    }
-
     /**
      * Pause listening to logcat logs.
      */
     private void pauseLogging() {
-        try {
-            mLogcatViewerService.pause();
-        } catch (RemoteException e) {
-            Log.e(LOG_TAG, "Pausing logcat failed");
-        }
+        mService.pause();
     }
 
     /**
      * Resume listening to logcat logs.
      */
     private void resumeLogging() {
-        try {
-            mLogcatViewerService.resume();
-        } catch (RemoteException e) {
-            Log.e(LOG_TAG, "Resuming logcat failed");
-        }
+        mService.resume();
     }
 
     /**
@@ -248,9 +202,10 @@ public class LogcatViewerFloatingView extends StandOutWindow {
 
     /**
      * Setup list view to show logcat log-entries.
+     *
      * @param rootView root view.
      */
-    private void setupLogListView(final View rootView){
+    private void setupLogListView(final View rootView) {
         //Log entry list view
         mListView = (ListView) rootView.findViewById(R.id.list);
         mListView.setStackFromBottom(true);
@@ -261,9 +216,10 @@ public class LogcatViewerFloatingView extends StandOutWindow {
 
     /**
      * Setup bottombar view to show action buttons.
+     *
      * @param rootView root view.
      */
-    private void setupBottomBarView(final View rootView){
+    private void setupBottomBarView(final View rootView) {
         //Pause button
         rootView.findViewById(R.id.pause).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -284,60 +240,7 @@ public class LogcatViewerFloatingView extends StandOutWindow {
             }
         });
 
-        //'Start Recording' button
-        rootView.findViewById(R.id.record).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                view.setVisibility(View.GONE);
-                rootView.findViewById(R.id.recordOn).setVisibility(View.VISIBLE);
-                try {
-                    String logFilename = "log_" + System.currentTimeMillis() + ".txt";
-                    mLogcatViewerService.startRecording(logFilename, mAdapter.getLogFilterText());
-                } catch (RemoteException e) {
-                    Log.e(LOG_TAG, "StartRecording:Trouble writing the log to a file");
-                }
-            }
-        });
 
-        //'Stop Recording' button
-        rootView.findViewById(R.id.recordOn).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                view.setVisibility(View.GONE);
-                rootView.findViewById(R.id.record).setVisibility(View.VISIBLE);
-                try {
-                    mLogcatViewerService.stopRecording();
-                } catch (RemoteException e) {
-                    Log.e(LOG_TAG, "StopRecording:Trouble writing the log to a file");
-                }
-            }
-        });
-
-        //'Show Log Records' button
-        rootView.findViewById(R.id.btnRecordList).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                int recordsViewVisibility = mRecordsListView.getVisibility();
-                resetMenuOptionLayout();
-                if (recordsViewVisibility == View.GONE) {
-                    if (mRecordsListView.getAdapter() == null) {
-                        mRecordsListView.setAdapter(new LogRecordsListAdapter(getApplicationContext()));
-                    } else {
-                        ((LogRecordsListAdapter) mRecordsListView.getAdapter()).notifyDataSetChanged();
-                }
-
-                    if (!mRecordsListView.getAdapter().isEmpty()) {
-                        mMenuOptionLayout.setVisibility(View.VISIBLE);
-                        mRecordsListView.setVisibility(View.VISIBLE);
-
-                        mNormalBottombarLayout.setVisibility(View.GONE);
-                        mRecordsBottombarLayout.setVisibility(View.VISIBLE);
-                    } else {
-                        Toast.makeText(getApplicationContext(), "Empty Logs directory! Save logs first.", Toast.LENGTH_LONG).show();
-                    }
-            }
-            }
-        });
 
         //'Enter filter text' button
         rootView.findViewById(R.id.find).setOnClickListener(new View.OnClickListener() {
@@ -348,7 +251,7 @@ public class LogcatViewerFloatingView extends StandOutWindow {
                 if (filterLayoutVisibility == View.GONE) {
                     mFilterLayout.setVisibility(View.VISIBLE);
                     mMenuOptionLayout.setVisibility(View.VISIBLE);
-            }
+                }
             }
         });
 
@@ -394,7 +297,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
             }
         });
 
-
         //'Back' button
         mRecordsBottombarLayout.findViewById(R.id.btnBack).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -426,7 +328,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
             }
         });
 
-
         //'Delete' button
         mRecordsBottombarLayout.findViewById(R.id.btnDelete).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -449,11 +350,13 @@ public class LogcatViewerFloatingView extends StandOutWindow {
             }
         });
     }
+
     /**
      * Setup 'Enter filter text' layout.
+     *
      * @param rootView root view.
      */
-    private void setupFilterTextView(final View rootView){
+    private void setupFilterTextView(final View rootView) {
         rootView.findViewById(R.id.btnLogFilter).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -470,7 +373,7 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     /**
      * Setup 'Select priority level' view
      */
-    private  void setupPriorityLevelView(){
+    private void setupPriorityLevelView() {
         mPriorityLevelRadioGroup.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(RadioGroup radioGroup, int checkedId) {
@@ -513,7 +416,7 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         Intent emailIntent = new Intent(android.content.Intent.ACTION_SEND_MULTIPLE);
 
         emailIntent.setData(Uri.parse("mailto:"));
-//      emailIntent.putExtra(Intent.EXTRA_EMAIL, new String[] { "sandeep@fatangare.info" });
+        //      emailIntent.putExtra(Intent.EXTRA_EMAIL, new String[] { "sandeep@fatangare.info" });
         emailIntent.putExtra(android.content.Intent.EXTRA_SUBJECT, "[" + getAppName() + "] Logcat Logs");
         emailIntent.setType("text/plain");
         emailIntent.putExtra(android.content.Intent.EXTRA_TEXT, "Please find attached logcat logs file.");
@@ -544,7 +447,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         //Launch email client application.
         startActivity(emailIntent);
     }
-
 
     /**
      * Delete selected 'Saved Logs' files.
@@ -590,5 +492,15 @@ public class LogcatViewerFloatingView extends StandOutWindow {
             final int childIndex = pos - firstListItemPosition;
             return listView.getChildAt(childIndex);
         }
+    }
+
+    @Override
+    public void onLogEntryRead(final String entry) {
+        mListView.post(new Runnable() {
+            @Override
+            public void run() {
+                mAdapter.addLogEntry(entry);
+            }
+        });
     }
 }

@@ -166,12 +166,6 @@
                 android:background="@drawable/play"
                 android:visibility="gone" />
 
-            <ImageView
-                android:id="@+id/record"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginRight="10dp"
-                android:background="@drawable/record" />
 
             <ImageView
                 android:id="@+id/recordOn"
@@ -180,13 +174,6 @@
                 android:layout_marginRight="10dp"
                 android:background="@drawable/recordon"
                 android:visibility="gone" />
-
-            <ImageView
-                android:id="@+id/btnRecordList"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginRight="10dp"
-                android:background="@drawable/recordlist" />
 
             <ImageView
                 android:id="@+id/find"

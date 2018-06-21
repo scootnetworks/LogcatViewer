@@ -230,7 +230,8 @@ public class LogcatViewerListAdapter extends BaseAdapter {
         mLogFilterText = "";
         mLogPriorityLevel = "";
         mFilteredLogcatData.clear();
-        mFilteredLogcatData.addAll(mLogcatData);
+//        mFilteredLogcatData.addAll(mLogcatData);
+        mLogcatData.clear();
         notifyDataSetChanged();
     }
 
