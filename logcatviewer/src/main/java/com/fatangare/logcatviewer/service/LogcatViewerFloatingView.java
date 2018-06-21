@@ -17,19 +17,15 @@
 
 package com.fatangare.logcatviewer.service;
 
-import java.io.File;
-import java.util.ArrayList;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
 
-import android.content.ComponentName;
-import android.content.Context;
 import android.content.Intent;
-import android.content.ServiceConnection;
 import android.graphics.Color;
-import android.net.Uri;
-import android.os.IBinder;
+import android.support.annotation.WorkerThread;
 import android.util.DisplayMetrics;
 import android.util.Log;
-import android.util.SparseBooleanArray;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.AdapterView;
@@ -38,13 +34,10 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.RadioGroup;
-import android.widget.Toast;
 
 import com.fatangare.logcatviewer.R;
-import com.fatangare.logcatviewer.service.LogcatViewerService.LocalBinder;
-import com.fatangare.logcatviewer.service.LogcatViewerService.LogEntryListener;
-import com.fatangare.logcatviewer.ui.adapter.LogRecordsListAdapter;
 import com.fatangare.logcatviewer.ui.adapter.LogcatViewerListAdapter;
+import com.fatangare.logcatviewer.utils.Constants;
 
 import wei.mark.standout.StandOutWindow;
 import wei.mark.standout.constants.StandOutFlags;
@@ -53,7 +46,7 @@ import wei.mark.standout.ui.Window;
 /**
  * Floating view to show logcat logs.
  */
-public class LogcatViewerFloatingView extends StandOutWindow implements LogEntryListener {
+public class LogcatViewerFloatingView extends StandOutWindow {
     private static final String LOG_TAG = "LogcatFloatingView";
 
     //Views
@@ -67,30 +60,12 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
     private LinearLayout mNormalBottombarLayout;
     private LinearLayout mRecordsBottombarLayout;
 
-    //Service
-    LogcatViewerService mService;
+    private final Object syncLock = new Object();
 
-    //Service connection
-    private ServiceConnection mLogcatViewerServiceConnection = new ServiceConnection() {
+    private volatile boolean mIsLogcatRunnableRunning = false;
+    private volatile boolean mShouldLogcatRunnableBeKilled = false;
 
-        public void onServiceConnected(ComponentName className, IBinder service) {
-
-            LocalBinder binder = (LocalBinder) service;
-            mService = binder.getService();
-            mService.setLogListener(LogcatViewerFloatingView.this);
-
-            try {
-                mService.restart();
-            } catch (Exception e) {
-                Log.e(LOG_TAG, "Could not start LogcatViewerService service");
-            }
-        }
-
-        public void onServiceDisconnected(ComponentName className) {
-            Log.i(LOG_TAG, "onServiceDisconnected has been called");
-            mService = null;
-        }
-    };
+    private Thread logcatThread;
 
     @Override
     public String getAppName() {
@@ -102,28 +77,86 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
         return getApplicationInfo().icon;
     }
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
+    private Runnable mLogcatRunnable = new Runnable() {
+        @Override
+        public void run() {
+            mIsLogcatRunnableRunning = true;
+            //Run logcat subscriber to subscribe for logcat log entries
+            runLogcatSubscriber();
+            //If reached here, it means thread is killed.
+            mIsLogcatRunnableRunning = false;
+        }
+    };
 
-        //bind service
-        bindService(new Intent(this, LogcatViewerService.class), mLogcatViewerServiceConnection, Context.BIND_AUTO_CREATE);
+    /**
+     * Subscribe logcat to listen logcat log entries.
+     */
+    @WorkerThread
+    private void runLogcatSubscriber() {
+        Process process = null;
+
+        //Execute logcat system command
+        try {
+            process = Runtime.getRuntime().exec("/system/bin/logcat -b " + Constants.LOGCAT_SOURCE_BUFFER_MAIN);
+        } catch (IOException e) {
+            Log.e(LOG_TAG, "Exception trying to exec logcat in a process", e);
+            return;
+        }
+
+        //Read logcat log entries
+        BufferedReader reader = null;
+
+        try {
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+
+            String logEntry;
+
+            //Till request to kill thread is not received, keep reading log entries
+            while (!mShouldLogcatRunnableBeKilled) {
+
+                //Read log entry.
+                logEntry = reader.readLine();
+
+                if (logEntry == null) {
+                    Log.e(LOG_TAG, "process buffer read line was null.");
+                    return;
+                }
+
+                //Send log entry to view.
+                onLogEntryRead(logEntry);
+
+                //If recording is on, save log entries in mRecordingData in order to save them
+                // after every LOG_SAVING_INTERVAL interval
+            }
+
+        } catch (IOException e) { //  interupted is an io exception
+            //Fail to read logcat log entries
+            Log.e(LOG_TAG, "Exception trying to read/parse the logcat process output", e);
+        } finally {
+            //Release resources
+            try {
+                reader.close();
+                process.destroy();
+            } catch (Exception e) {
+                Log.e(LOG_TAG, "Exception trying to clean up resources", e);
+            }
+        }
+
+        Log.d(LOG_TAG, "Terminating LogcatRunnable thread");
     }
 
     @Override
     public void onDestroy() {
-        //if recording, stop recording before unbinding service.
-        if (mService != null) {
-            mService.setLogListener(null);
-            mService.stop();
-        }
-
-        unbindService(mLogcatViewerServiceConnection);
         super.onDestroy();
+        mShouldLogcatRunnableBeKilled = true;
+
+        killThread();
     }
 
     @Override
     public void createAndAttachView(int id, FrameLayout frame) {
+        Log.d(LOG_TAG, "createAndAttachView");
+
         // create a new layout from body.xml
         LayoutInflater inflater = (LayoutInflater) getSystemService(LAYOUT_INFLATER_SERVICE);
         final View rootView = inflater.inflate(R.layout.main, frame, true);
@@ -148,6 +181,17 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
         setupRecordListView();
         setupFilterTextView(rootView);
         setupPriorityLevelView();
+
+        killThread();
+
+        logcatThread = new Thread(mLogcatRunnable);
+        logcatThread.start();
+    }
+
+    void killThread() {
+        if (logcatThread != null && logcatThread.isAlive()) {
+            logcatThread.interrupt();
+        }
     }
 
     // the window will be centered
@@ -174,20 +218,6 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
     @Override
     public Intent getPersistentNotificationIntent(int id) {
         return StandOutWindow.getShowIntent(this, LogcatViewerFloatingView.class, id);
-    }
-
-    /**
-     * Pause listening to logcat logs.
-     */
-    private void pauseLogging() {
-        mService.pause();
-    }
-
-    /**
-     * Resume listening to logcat logs.
-     */
-    private void resumeLogging() {
-        mService.resume();
     }
 
     /**
@@ -220,27 +250,6 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
      * @param rootView root view.
      */
     private void setupBottomBarView(final View rootView) {
-        //Pause button
-        rootView.findViewById(R.id.pause).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                pauseLogging();
-                view.setVisibility(View.GONE);
-                rootView.findViewById(R.id.play).setVisibility(View.VISIBLE);
-            }
-        });
-
-        //Play button
-        rootView.findViewById(R.id.play).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                resumeLogging();
-                view.setVisibility(View.GONE);
-                rootView.findViewById(R.id.pause).setVisibility(View.VISIBLE);
-            }
-        });
-
-
 
         //'Enter filter text' button
         rootView.findViewById(R.id.find).setOnClickListener(new View.OnClickListener() {
@@ -273,11 +282,10 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
         rootView.findViewById(R.id.btnReset).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                pauseLogging();
-                mAdapter.reset();
-                resumeLogging();
+                synchronized (syncLock) {
+                    mAdapter.reset();
+                }
                 resetMenuOptionLayout();
-
             }
         });
     }
@@ -328,27 +336,6 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
             }
         });
 
-        //'Delete' button
-        mRecordsBottombarLayout.findViewById(R.id.btnDelete).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                deleteRecordedLogFiles();
-
-                if (mRecordsListView.getCount() == 0) {
-                    resetMenuOptionLayout();
-                    mNormalBottombarLayout.setVisibility(View.VISIBLE);
-                    mRecordsBottombarLayout.setVisibility(View.GONE);
-                }
-            }
-        });
-
-        //'Share' button
-        mRecordsBottombarLayout.findViewById(R.id.btnShare).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                shareRecordedLogFiles();
-            }
-        });
     }
 
     /**
@@ -362,10 +349,9 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
             public void onClick(View view) {
                 String filterText = ((EditText) rootView.findViewById(R.id.etLogFilter)).getText().toString().trim();
                 resetMenuOptionLayout();
-
-                pauseLogging();
-                mAdapter.setLogFilterText(filterText);
-                resumeLogging();
+                synchronized (syncLock) {
+                    mAdapter.setLogFilterText(filterText);
+                }
             }
         });
     }
@@ -404,78 +390,6 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
     }
 
     /**
-     * Share selected 'Saved Logs' files.
-     */
-    private void shareRecordedLogFiles() {
-        //If none is selected, return
-        if (mRecordsListView.getCheckedItemCount() == 0) {
-            Toast.makeText(getApplicationContext(), "First select log entry!", Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        Intent emailIntent = new Intent(android.content.Intent.ACTION_SEND_MULTIPLE);
-
-        emailIntent.setData(Uri.parse("mailto:"));
-        //      emailIntent.putExtra(Intent.EXTRA_EMAIL, new String[] { "sandeep@fatangare.info" });
-        emailIntent.putExtra(android.content.Intent.EXTRA_SUBJECT, "[" + getAppName() + "] Logcat Logs");
-        emailIntent.setType("text/plain");
-        emailIntent.putExtra(android.content.Intent.EXTRA_TEXT, "Please find attached logcat logs file.");
-
-        //Loop through selected files and add to uri list.
-        SparseBooleanArray checkedItemPositions = mRecordsListView.getCheckedItemPositions();
-        int cnt = checkedItemPositions.size();
-
-        LogRecordsListAdapter logRecordsListAdapter = (LogRecordsListAdapter) mRecordsListView.getAdapter();
-        ArrayList<Uri> uris = new ArrayList<Uri>();
-        for (int index = 0; index < cnt; index++) {
-            if (checkedItemPositions.valueAt(index)) {
-                File file = (File) logRecordsListAdapter.getItem(checkedItemPositions.keyAt(index));
-                uris.add(Uri.fromFile(file));
-            }
-
-        }
-
-        //add all files to intent data.
-        emailIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
-
-        //Launching from service so set this flag.
-        emailIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-        //Hide floating view; otherwise email client will be shown below it.
-        hide(StandOutWindow.DEFAULT_ID);
-
-        //Launch email client application.
-        startActivity(emailIntent);
-    }
-
-    /**
-     * Delete selected 'Saved Logs' files.
-     */
-    private void deleteRecordedLogFiles() {
-        if (mListView.getCheckedItemCount() == 0) {
-            Toast.makeText(getApplicationContext(), "First select log entry!", Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        //Loop through selected files and delete them.
-        SparseBooleanArray checkedItemPositions = mRecordsListView.getCheckedItemPositions();
-        int cnt = checkedItemPositions.size();
-
-        LogRecordsListAdapter logRecordsListAdapter = (LogRecordsListAdapter) mRecordsListView.getAdapter();
-        for (int index = 0; index < cnt; index++) {
-            if (checkedItemPositions.valueAt(index)) {
-                File file = (File) logRecordsListAdapter.getItem(checkedItemPositions.keyAt(index));
-                if (file.delete()) {
-                    Toast.makeText(getApplicationContext(), "File " + file.getName() + " deleted!", Toast.LENGTH_SHORT).show();
-                }
-            }
-        }
-
-        //Update list-view.
-        logRecordsListAdapter.notifyDataSetChanged();
-    }
-
-    /**
      * Get list item view by position
      *
      * @param pos      position of list item.
@@ -494,13 +408,14 @@ public class LogcatViewerFloatingView extends StandOutWindow implements LogEntry
         }
     }
 
-    @Override
-    public void onLogEntryRead(final String entry) {
-        mListView.post(new Runnable() {
-            @Override
-            public void run() {
-                mAdapter.addLogEntry(entry);
-            }
-        });
+    void onLogEntryRead(final String entry) {
+        synchronized (syncLock) {
+            mListView.post(new Runnable() {
+                @Override
+                public void run() {
+                    mAdapter.addLogEntry(entry);
+                }
+            });
+        }
     }
 }

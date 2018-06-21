@@ -152,22 +152,6 @@
             android:padding="4dp">
 
             <ImageView
-                android:id="@+id/pause"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginRight="10dp"
-                android:background="@drawable/pause" />
-
-            <ImageView
-                android:id="@+id/play"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginRight="10dp"
-                android:background="@drawable/play"
-                android:visibility="gone" />
-
-
-            <ImageView
                 android:id="@+id/recordOn"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
