@@ -34,6 +34,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.RadioGroup;
+import android.widget.Toast;
 
 import com.fatangare.logcatviewer.R;
 import com.fatangare.logcatviewer.ui.adapter.LogcatViewerListAdapter;
@@ -119,6 +120,17 @@ public class LogcatViewerFloatingView extends StandOutWindow {
 
                 if (logEntry == null) {
                     Log.e(LOG_TAG, "process buffer read line was null.");
+                    if(mListView != null){
+                        mListView.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(LogcatViewerFloatingView.this, "Error with logcat process.",
+                                    Toast
+                                    .LENGTH_LONG).show();
+                            }
+                        });
+                    }
+                    stopSelf();
                     return;
                 }
 
