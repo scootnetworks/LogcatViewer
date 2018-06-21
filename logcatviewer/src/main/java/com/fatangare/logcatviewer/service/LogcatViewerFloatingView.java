@@ -63,7 +63,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
 
     private final Object syncLock = new Object();
 
-    private volatile boolean mIsLogcatRunnableRunning = false;
     private volatile boolean mShouldLogcatRunnableBeKilled = false;
 
     private Thread logcatThread;
@@ -81,11 +80,8 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     private Runnable mLogcatRunnable = new Runnable() {
         @Override
         public void run() {
-            mIsLogcatRunnableRunning = true;
             //Run logcat subscriber to subscribe for logcat log entries
             runLogcatSubscriber();
-            //If reached here, it means thread is killed.
-            mIsLogcatRunnableRunning = false;
         }
     };
 
@@ -94,7 +90,7 @@ public class LogcatViewerFloatingView extends StandOutWindow {
      */
     @WorkerThread
     private void runLogcatSubscriber() {
-        Process process = null;
+        Process process;
 
         //Execute logcat system command
         try {
@@ -110,23 +106,20 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         try {
             reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
 
-            String logEntry;
-
             //Till request to kill thread is not received, keep reading log entries
             while (!mShouldLogcatRunnableBeKilled) {
 
                 //Read log entry.
-                logEntry = reader.readLine();
+                final String logEntry = reader.readLine();
 
                 if (logEntry == null) {
                     Log.e(LOG_TAG, "process buffer read line was null.");
-                    if(mListView != null){
+                    if (mListView != null) {
                         mListView.post(new Runnable() {
                             @Override
                             public void run() {
-                                Toast.makeText(LogcatViewerFloatingView.this, "Error with logcat process.",
-                                    Toast
-                                    .LENGTH_LONG).show();
+                                Toast.makeText(LogcatViewerFloatingView.this, "Error with logcat process.", Toast.LENGTH_LONG)
+                                    .show();
                             }
                         });
                     }
@@ -135,10 +128,14 @@ public class LogcatViewerFloatingView extends StandOutWindow {
                 }
 
                 //Send log entry to view.
-                onLogEntryRead(logEntry);
-
-                //If recording is on, save log entries in mRecordingData in order to save them
-                // after every LOG_SAVING_INTERVAL interval
+                synchronized (syncLock) {
+                    mListView.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            mAdapter.addLogEntry(logEntry);
+                        }
+                    });
+                }
             }
 
         } catch (IOException e) { //  interupted is an io exception
@@ -161,7 +158,6 @@ public class LogcatViewerFloatingView extends StandOutWindow {
     public void onDestroy() {
         super.onDestroy();
         mShouldLogcatRunnableBeKilled = true;
-
         killThread();
     }
 
@@ -420,14 +416,4 @@ public class LogcatViewerFloatingView extends StandOutWindow {
         }
     }
 
-    void onLogEntryRead(final String entry) {
-        synchronized (syncLock) {
-            mListView.post(new Runnable() {
-                @Override
-                public void run() {
-                    mAdapter.addLogEntry(entry);
-                }
-            });
-        }
-    }
 }
