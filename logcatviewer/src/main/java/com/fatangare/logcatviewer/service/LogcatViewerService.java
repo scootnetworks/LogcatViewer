@@ -22,6 +22,7 @@ import android.content.Intent;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
+import android.support.annotation.NonNull;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -181,7 +182,9 @@ public class LogcatViewerService extends Service {
         try {
             process = Runtime.getRuntime().exec("/system/bin/logcat -b " + mLogcatSource);
         } catch (IOException e) {
+            Log.e(LOG_TAG,"Exception trying to exec logcat in a process", e);
             sendMessage(MSG_LOGCAT_RUN_FAILURE);
+            return;
         }
 
         //Read logcat log entries
@@ -201,6 +204,11 @@ public class LogcatViewerService extends Service {
 
                 //Read log entry.
                 logEntry = reader.readLine();
+
+                if(logEntry == null){
+                    Log.d(LOG_TAG,"process buffer read line was null.");
+                    continue;
+                }
 
                 //Send log entry to view.
                 sendLogEntry(logEntry);
@@ -227,17 +235,22 @@ public class LogcatViewerService extends Service {
 
             }
 
-            //Release resources
-            reader.close();
-            process.destroy();
 
         } catch (IOException e) {
             //Fail to read logcat log entries
             sendMessage(MSG_LOGCAT_READ_FAILURE);
+            Log.e(LOG_TAG,"Exception trying to read/parse the logcat process output", e);
+        } finally {
+            //Release resources
+            try {
+                reader.close();
+                process.destroy();
+            } catch (Exception e){
+                Log.e(LOG_TAG,"Exception trying to clean up resources", e);
+            }
         }
 
         Log.d(LOG_TAG, "Terminating LogcatRunnable thread");
-        return;
     }
 
     /**
@@ -267,7 +280,7 @@ public class LogcatViewerService extends Service {
      * Send logcat log entry to view.
      * @param logEntry log entry.
      */
-    private void sendLogEntry(String logEntry) {
+    private void sendLogEntry(@NonNull String logEntry) {
         Message.obtain(mHandler, MSG_NEW_LOG_ENTRY, logEntry).sendToTarget();
     }
 
